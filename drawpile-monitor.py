@@ -68,6 +68,13 @@ class Config:
         self._read(parser, "config", "wordlist_path", "wordlist_path", None)
         self._read(
             parser,
+            "config",
+            "max_error_streak_before_report",
+            "reportable_error_streak",
+            convert=int,
+        )
+        self._read(
+            parser,
             "messages",
             "session_name_first_warning",
             "message_session_name_first_warning",
@@ -99,10 +106,12 @@ class Config:
     def _relative_to_script(file):
         return os.path.join(os.path.dirname(os.path.realpath(__file__)), file)
 
-    def _read(self, parser, config_section, config_key, attr_key, fallback=...):
+    def _read(self, parser, config_section, config_key, attr_key, fallback=..., convert=...):
         try:
             value = parser[config_section][config_key]
             if len(value) > 0:
+                if convert is not Ellipsis:
+                    value = convert(value)
                 setattr(self, attr_key, value)
             else:
                 raise KeyError()
@@ -263,6 +272,7 @@ class Monitor:
         self._api = api
         self._db = db
         self._reports = []
+        self._error_streak = 0
 
     def _append_report(self, message):
         if self._reports:
@@ -378,21 +388,65 @@ class Monitor:
     # Main entry
 
     def check(self):
-        sessions = self._api.get_sessions()
+        have_error = False
+        report_errors = self._error_streak == self._config.reportable_error_streak
+        logging.debug("%s %s %s", report_errors, self._error_streak, self._config.reportable_error_streak)
+
+        try:
+            sessions = self._api.get_sessions()
+        except Exception:
+            sessions = []
+            logging.exception("Error retrieving sessions altogether")
+            have_error = True
+            if report_errors:
+                self._append_report("Error retrieving sessions")
+
         for session in sessions:
             with InterruptDisabled():
                 try:
                     self._check_session(session)
                 except Exception:
                     logging.exception("Error checking session %s", session)
+                    have_error = True
+                    if report_errors:
+                        self._append_report(f"Error checking session {session}")
 
-        users = self._api.get_users()
+        try:
+            users = self._api.get_users()
+        except Exception:
+            users = []
+            logging.exception("Error retrieving users altogether")
+            have_error = True
+            if report_errors:
+                self._append_report("Error retrieving users")
+
         for user in users:
             with InterruptDisabled():
                 try:
                     self._check_user(user)
                 except Exception:
                     logging.exception("Error checking user %s", user)
+                    have_error = True
+                    if report_errors:
+                        self._append_report(f"Error checking user {user}")
+
+        if report_errors and have_error:
+            self._append_report(
+                f"There have been {self._error_streak + 1} errors in a row. "
+                + "Something might be wrong with your server. "
+                + "Will report when getting a good run again."
+            )
+        elif (
+            not have_error and self._error_streak > self._config.reportable_error_streak
+        ):
+            self._append_report(
+                "Got a good run, looks like your server is healthy again."
+            )
+
+        if have_error:
+            self._error_streak += 1
+        else:
+            self._error_streak = 0
 
     def report(self):
         while self._reports:
