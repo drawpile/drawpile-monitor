@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=16384)
 def is_offensive(s):
     import profanity_check
 
