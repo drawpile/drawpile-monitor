@@ -60,6 +60,16 @@ notified about it.
 
 It optionally reports the stuff it did to a Discord webhook.
 
+## Testing Profanity
+
+You can check what drawpile-monitor would consider offensive by running
+`./test-offensive.py` and typing in the stuff you want to check. It will give
+you a breakdown of the profanity check along with the final verdict based on
+those.
+
+If something is getting falsely flagged, you can use this to figure out where
+it's going wrong so that you can adjust the right knobs.
+
 # LICENSE
 
 Licensed under the MIT license, see [the LICENSE file](LICENSE) for details.

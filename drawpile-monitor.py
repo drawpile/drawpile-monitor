@@ -53,7 +53,7 @@ def is_offensive_profanity_check(s):
 
 
 class Config:
-    def __init__(self, config_path):
+    def __init__(self, config_path, test_profanity_only=False):
         if not config_path:
             config_path = self._relative_to_script("config.ini")
         self._has_error = False
@@ -61,49 +61,52 @@ class Config:
         if not parser.read(config_path):
             raise ValueError(f"Can't parse config '{config_path}'")
 
-        self._read(parser, "config", "base_url", "base_url")
-        self._read(parser, "config", "discord_webhook_url", "discord_webhook_url", None)
-        self._read(
-            parser,
-            "config",
-            "database_path",
-            "database_path",
-            self._relative_to_script("drawpile-monitor.db"),
-        )
-        self._read(parser, "config", "wordlist_path", "wordlist_path", None)
-        self._read(
-            parser,
-            "config",
-            "max_error_streak_before_report",
-            "reportable_error_streak",
-            convert=int,
-        )
-        self._read(
-            parser,
-            "messages",
-            "session_name_first_warning",
-            "message_session_name_first_warning",
-        )
-        self._read(
-            parser,
-            "messages",
-            "session_name_second_warning",
-            "message_session_name_second_warning",
-        )
-        self._read(
-            parser,
-            "messages",
-            "session_name_terminate",
-            "message_session_name_terminate",
-        )
-        self._read(
-            parser,
-            "messages",
-            "session_alias_terminate",
-            "message_session_alias_terminate",
-        )
-        self._read(parser, "messages", "user_kick", "message_user_kick")
+        if not test_profanity_only:
+            self._read(parser, "config", "base_url", "base_url")
+            self._read(
+                parser, "config", "discord_webhook_url", "discord_webhook_url", None
+            )
+            self._read(
+                parser,
+                "config",
+                "database_path",
+                "database_path",
+                self._relative_to_script("drawpile-monitor.db"),
+            )
+            self._read(
+                parser,
+                "config",
+                "max_error_streak_before_report",
+                "reportable_error_streak",
+                convert=int,
+            )
+            self._read(
+                parser,
+                "messages",
+                "session_name_first_warning",
+                "message_session_name_first_warning",
+            )
+            self._read(
+                parser,
+                "messages",
+                "session_name_second_warning",
+                "message_session_name_second_warning",
+            )
+            self._read(
+                parser,
+                "messages",
+                "session_name_terminate",
+                "message_session_name_terminate",
+            )
+            self._read(
+                parser,
+                "messages",
+                "session_alias_terminate",
+                "message_session_alias_terminate",
+            )
+            self._read(parser, "messages", "user_kick", "message_user_kick")
 
+        self._read(parser, "config", "wordlist_path", "wordlist_path", None)
         self._read(
             parser,
             "config",
