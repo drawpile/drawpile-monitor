@@ -451,9 +451,12 @@ class Monitor:
 
     def _check_user(self, user, nsfm_sessions):
         user_name = user["name"]
+        session_id = user.get("session")
+        if not session_id:
+            logging.debug("User '%s' is not in any session, skipping", user_name)
+            return
 
         if self._should_skip_nsfm():
-            session_id = user.get("session")
             nsfm = nsfm_sessions.get(session_id)
             if nsfm is None:
                 logging.warning(
