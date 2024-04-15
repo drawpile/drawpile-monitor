@@ -26,6 +26,7 @@ if __name__ == "__main__":
 
     config = monitor.Config(args.config, test_profanity_only=True)
     monitor.init_profanity_checker(config.wordlist_path)
+    monitor.init_filter_allowed(config.allowlist_path)
     monitor.init_is_offensive(config.min_offensive_probability)
 
     min_prob = config.min_offensive_probability
@@ -33,12 +34,14 @@ if __name__ == "__main__":
         while True:
             print()
             s = input("Enter string to check: ")
-            bp = monitor.is_offensive_better_profanity(s)
-            pc_prob = monitor.is_offensive_profanity_check(s)
+            filtered = monitor.filter_allowed(s)
+            bp = monitor.is_offensive_better_profanity(filtered)
+            pc_prob = monitor.is_offensive_profanity_check(filtered)
             pc = pc_prob >= min_prob
             pc_comparison = ">=" if pc else "<"
             result = monitor.is_offensive(s)
             print(f"\tinput: {repr(s)}")
+            print(f"\tafter applying allowlist: {repr(filtered)}")
             print(f"\tword list checker: {_to_verdict(bp)}")
             print(
                 f"\tprediction checker: {_to_verdict(pc)} "

@@ -8,6 +8,7 @@ import functools
 import logging
 import os
 import random
+import re
 import requests
 import signal
 import sqlite3
@@ -28,15 +29,37 @@ def init_profanity_checker(wordlist_path):
         )
 
 
+def init_filter_allowed(allowlist_path):
+    global filter_allowed
+
+    filter_allowed = lambda s: s
+
+    if allowlist_path:
+        logging.debug("Loading allowlist %s", allowlist_path)
+        allowed_words = list(better_profanity.utils.read_wordlist(allowlist_path))
+        if allowed_words:
+            escaped_words = "|".join(map(re.escape, allowed_words))
+            allowed_re = re.compile(
+                f"(?:\\b|(?<=_))(?:{escaped_words})(?:\\b|(?=_))", re.IGNORECASE
+            )
+            logging.debug("Allowed re: /%s/", allowed_re)
+
+            def filter_allowed_fn(s):
+                return re.sub(allowed_re, "", s)
+
+            filter_allowed = filter_allowed_fn
+
+
 def init_is_offensive(min_offensive_probability):
     global is_offensive
 
     @functools.lru_cache(maxsize=16384)
     def is_offensive_fn(s):
         logging.debug("Checking profanity of '%s'", s)
+        filtered = filter_allowed(s)
         return (
-            is_offensive_better_profanity(s)
-            or is_offensive_profanity_check(s) >= min_offensive_probability
+            is_offensive_better_profanity(filtered)
+            or is_offensive_profanity_check(filtered) >= min_offensive_probability
         )
 
     is_offensive = is_offensive_fn
@@ -107,6 +130,7 @@ class Config:
             self._read(parser, "messages", "user_kick", "message_user_kick")
 
         self._read(parser, "config", "wordlist_path", "wordlist_path", None)
+        self._read(parser, "config", "allowlist_path", "allowlist_path", None)
         self._read(
             parser,
             "config",
@@ -533,6 +557,7 @@ if __name__ == "__main__":
 
     config = Config(args.config)
     init_profanity_checker(config.wordlist_path)
+    init_filter_allowed(config.allowlist_path)
     init_is_offensive(config.min_offensive_probability)
 
     dry = args.dryrun
