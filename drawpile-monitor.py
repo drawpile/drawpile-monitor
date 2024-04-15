@@ -19,14 +19,37 @@ logging.basicConfig(
 )
 
 
-@functools.lru_cache(maxsize=16384)
-def is_offensive(s):
+def init_profanity_checker(wordlist_path):
+    better_profanity.profanity.load_censor_words()
+    if wordlist_path:
+        logging.debug("Loading wordlist %s", wordlist_path)
+        better_profanity.profanity.add_censor_words(
+            list(better_profanity.utils.read_wordlist(wordlist_path))
+        )
+
+
+def init_is_offensive(min_offensive_probability):
+    global is_offensive
+
+    @functools.lru_cache(maxsize=16384)
+    def is_offensive_fn(s):
+        logging.debug("Checking profanity of '%s'", s)
+        return (
+            is_offensive_better_profanity(s)
+            or is_offensive_profanity_check(s) >= min_offensive_probability
+        )
+
+    is_offensive = is_offensive_fn
+
+
+def is_offensive_better_profanity(s):
+    return better_profanity.profanity.contains_profanity(s)
+
+
+def is_offensive_profanity_check(s):
     import profanity_check
 
-    logging.debug("Checking profanity of '%s'", s)
-    return profanity_check.predict([s])[
-        0
-    ] or better_profanity.profanity.contains_profanity(s)
+    return profanity_check.predict_prob([s])[0]
 
 
 class Config:
@@ -80,6 +103,15 @@ class Config:
             "message_session_alias_terminate",
         )
         self._read(parser, "messages", "user_kick", "message_user_kick")
+
+        self._read(
+            parser,
+            "config",
+            "min_offensive_probability",
+            "min_offensive_probability",
+            0.9,
+            convert=lambda v: float(v) / 100.0,
+        )
 
         if self._has_error:
             raise ValueError("Invalid configuration")
@@ -497,13 +529,8 @@ if __name__ == "__main__":
         sys.exit(2)
 
     config = Config(args.config)
-
-    better_profanity.profanity.load_censor_words()
-    if config.wordlist_path:
-        logging.debug("Loading wordlist %s", config.wordlist_path)
-        better_profanity.profanity.add_censor_words(
-            list(better_profanity.utils.read_wordlist(config.wordlist_path))
-        )
+    init_profanity_checker(config.wordlist_path)
+    init_is_offensive(config.min_offensive_probability)
 
     dry = args.dryrun
     interval = args.interval
