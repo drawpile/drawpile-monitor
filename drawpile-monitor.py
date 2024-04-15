@@ -488,14 +488,6 @@ class Monitor:
 
 
 if __name__ == "__main__":
-    username = os.environ.get("DRAWPILE_MONITOR_USER")
-    if not username:
-        logging.critical("DRAWPILE_MONITOR_USER environment variable not set")
-
-    password = os.environ.get("DRAWPILE_MONITOR_PASS")
-    if not password:
-        logging.critical("DRAWPILE_MONITOR_PASS environment variable not set")
-
     parser = argparse.ArgumentParser(
         prog="Drawpile Monitor", description="Monitors sessions on a Drawpile server."
     )
@@ -526,6 +518,14 @@ if __name__ == "__main__":
         default=0,
     )
     args = parser.parse_args()
+
+    username = os.environ.get("DRAWPILE_MONITOR_USER")
+    if not username:
+        logging.critical("DRAWPILE_MONITOR_USER environment variable not set")
+
+    password = os.environ.get("DRAWPILE_MONITOR_PASS")
+    if not password:
+        logging.critical("DRAWPILE_MONITOR_PASS environment variable not set")
 
     if not username or not password:
         logging.critical("Don't have a web admin username and password, stopping")
