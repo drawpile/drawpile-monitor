@@ -410,7 +410,7 @@ class Monitor:
         have_error = False
         report_errors = self._error_streak == self._config.reportable_error_streak
         logging.debug(
-            "%s %s %s",
+            "Checking; report_errors=%s error_streak=%s reportable_error_streak=%s",
             report_errors,
             self._error_streak,
             self._config.reportable_error_streak,
