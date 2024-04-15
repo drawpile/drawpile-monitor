@@ -4,6 +4,7 @@ import argparse
 import better_profanity
 import configparser
 import contextlib
+import enum
 import functools
 import logging
 import os
@@ -75,6 +76,21 @@ def is_offensive_profanity_check(s):
     return profanity_check.predict_prob([s])[0]
 
 
+class HandleNsfm(enum.Enum):
+    CHECK = 1
+    SKIP = 2
+
+    @classmethod
+    def convert_from_string(cls, s):
+        sc = s.casefold()
+        if sc == "check":
+            return cls.CHECK
+        elif sc == "skip":
+            return cls.SKIP
+        else:
+            raise ValueError(f"Unknown handle_nsfm value '{s}'")
+
+
 class Config:
     def __init__(self, config_path, test_profanity_only=False):
         if not config_path:
@@ -95,6 +111,14 @@ class Config:
                 "database_path",
                 "database_path",
                 self._relative_to_script("drawpile-monitor.db"),
+            )
+            self._read(
+                parser,
+                "config",
+                "handle_nsfm",
+                "handle_nsfm",
+                HandleNsfm.CHECK,
+                lambda s: HandleNsfm.convert_from_string(s),
             )
             self._read(
                 parser,
@@ -327,6 +351,9 @@ class Monitor:
         else:
             self._reports.append(message)
 
+    def _should_skip_nsfm(self):
+        return self._config.handle_nsfm == HandleNsfm.SKIP
+
     # Sessions
 
     def _generate_clean_title(self):
@@ -380,25 +407,31 @@ class Monitor:
         session_id = session["id"]
         logging.debug("Check session %s", session_id)
 
-        session_title = session["title"]
-        session_alias = session.get("alias")
-        if session_alias and is_offensive(session_alias):
-            logging.warning("Session alias is offensive: %s", session)
-            self._manipulate_offensive_session(
-                session_id,
-                f"offensive alias '{session_alias}'",
-                "terminate session",
-                self._config.message_session_alias_terminate,
-                True,
-            )
-
-        if is_offensive(session_title):
-            logging.warning("Session is offensive: %s", session)
-            self._handle_offensive_session_name(
-                session_id, f"offensive title '{session_title}'"
-            )
+        nsfm = session.get("nsfm", False)
+        if nsfm and self._should_skip_nsfm():
+            logging.debug("Session is NSFM, skipping")
         else:
-            logging.debug("Session title '%s' is okay", session_title)
+            session_title = session["title"]
+            session_alias = session.get("alias")
+            if session_alias and is_offensive(session_alias):
+                logging.warning("Session alias is offensive: %s", session)
+                self._manipulate_offensive_session(
+                    session_id,
+                    f"offensive alias '{session_alias}'",
+                    "terminate session",
+                    self._config.message_session_alias_terminate,
+                    True,
+                )
+
+            if is_offensive(session_title):
+                logging.warning("Session is offensive: %s", session)
+                self._handle_offensive_session_name(
+                    session_id, f"offensive title '{session_title}'"
+                )
+            else:
+                logging.debug("Session title '%s' is okay", session_title)
+
+        return (session_id, nsfm)
 
     # Users
 
@@ -416,8 +449,24 @@ class Monitor:
         self._api.kick_user(session_id, user_id)
         self._append_report(f"User {user_name}: {offense} - {mitigation}")
 
-    def _check_user(self, user):
+    def _check_user(self, user, nsfm_sessions):
         user_name = user["name"]
+
+        if self._should_skip_nsfm():
+            session_id = user.get("session")
+            nsfm = nsfm_sessions.get(session_id)
+            if nsfm is None:
+                logging.warning(
+                    "User '%s' is in unknown session '%s', "
+                    + "treating it as NSFM and skipping",
+                    user_name,
+                    session_id,
+                )
+                return
+            elif nsfm:
+                logging.debug("User '%s' is in NSFM session, skipping", user_name)
+                return
+
         if user.get("mod"):
             logging.debug("User '%s' is mod", user_name)
         elif is_offensive(user_name):
@@ -449,10 +498,12 @@ class Monitor:
             if report_errors:
                 self._append_report("Error retrieving sessions")
 
+        nsfm_sessions = {}
         for session in sessions:
             with InterruptDisabled():
                 try:
-                    self._check_session(session)
+                    session_id, nsfm = self._check_session(session)
+                    nsfm_sessions[str(session_id)] = bool(nsfm)
                 except Exception:
                     logging.exception("Error checking session %s", session)
                     have_error = True
@@ -471,7 +522,7 @@ class Monitor:
         for user in users:
             with InterruptDisabled():
                 try:
-                    self._check_user(user)
+                    self._check_user(user, nsfm_sessions)
                 except Exception:
                     logging.exception("Error checking user %s", user)
                     have_error = True
