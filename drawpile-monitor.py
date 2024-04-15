@@ -88,7 +88,9 @@ class Config:
     def _relative_to_script(file):
         return os.path.join(os.path.dirname(os.path.realpath(__file__)), file)
 
-    def _read(self, parser, config_section, config_key, attr_key, fallback=..., convert=...):
+    def _read(
+        self, parser, config_section, config_key, attr_key, fallback=..., convert=...
+    ):
         try:
             value = parser[config_section][config_key]
             if len(value) > 0:
@@ -372,7 +374,12 @@ class Monitor:
     def check(self):
         have_error = False
         report_errors = self._error_streak == self._config.reportable_error_streak
-        logging.debug("%s %s %s", report_errors, self._error_streak, self._config.reportable_error_streak)
+        logging.debug(
+            "%s %s %s",
+            report_errors,
+            self._error_streak,
+            self._config.reportable_error_streak,
+        )
 
         try:
             sessions = self._api.get_sessions()
