@@ -263,17 +263,24 @@ class Api:
                 self._make_url("sessions", session_id, user_id), auth=self._auth
             ).json()
 
+    def can_send_reports(self):
+        return bool(self._discord_webhook_url)
+
     def send_report(self, message):
-        if self._discord_webhook_url:
-            requests.post(
-                self._discord_webhook_url,
-                json={
-                    "content": message,
-                    "flags": 1 << 2,  # suppress embeds
-                },
-            )
+        if self.can_send_reports():
+            self.send_notification(message)
         else:
             logging.debug("No Discord webhook url, not reporting anything")
+
+    def send_notification(self, message):
+        requests.post(
+            self._discord_webhook_url,
+            json={
+                "content": message,
+                "flags": 1 << 2,  # suppress embeds
+                "allowed_mentions": {"parse": []},  # suppress mentions
+            },
+        )
 
 
 class Database:
