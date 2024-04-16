@@ -72,6 +72,7 @@ def init_is_offensive_nsfm(nsfm_wordlist_path):
 
     is_offensive_nsfm = lambda s: False
     if nsfm_wordlist_path:
+        logging.debug("Loading nsfm wordlist %s", nsfm_wordlist_path)
         words = list(better_profanity.utils.read_wordlist(nsfm_wordlist_path))
         if words:
             nsfm_profanity = better_profanity.Profanity(words)
