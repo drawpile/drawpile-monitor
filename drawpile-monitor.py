@@ -277,6 +277,7 @@ class Database:
         logging.debug("Opening database '%s'", path)
         self._con = sqlite3.connect(path)
         self._create_tables()
+        self._apply_migrations()
 
     def _create_tables(self):
         with self._con as con:
@@ -308,6 +309,39 @@ class Database:
                     flags integer not null)
                 """
             )
+            con.execute(
+                """
+                create table if not exists migrations (
+                    id integer primary key not null)
+                """
+            )
+
+    def _apply_migrations(self):
+        migrations = [
+            (
+                1,
+                [
+                    """
+                    alter table user_offense
+                        add column sid text
+                    """,
+                    """
+                    alter table user_offense
+                        add column is_registered integer not null default 0
+                    """,
+                ],
+            ),
+        ]
+        for migration_id, sqls in migrations:
+            with self._con as con:
+                cur = con.execute("begin")
+                cur.execute("select 1 from migrations where id = ?", (migration_id,))
+                if not cur.fetchone():
+                    for sql in sqls:
+                        cur.execute(sql)
+                    cur.execute(
+                        "insert into migrations (id) values (?)", (migration_id,)
+                    )
 
     def count_session_offenses(self):
         with contextlib.closing(self._con.cursor()) as cur:
@@ -333,15 +367,24 @@ class Database:
                     (session_id, offense, mitigation),
                 )
 
-    def insert_user_offense(self, user_name, user_ip, offense, mitigation):
+    def insert_user_offense(
+        self, user_name, user_ip, user_sid, user_is_registered, offense, mitigation
+    ):
         if not self._dry:
             with self._con as con:
                 con.execute(
                     """
-                    insert into user_offense(name, ip, offense, mitigation)
-                    values (?, ?, ?, ?)
+                    insert into user_offense(name, ip, sid, is_registered, offense, mitigation)
+                    values (?, ?, ?, ?, ?, ?)
                     """,
-                    (user_name, user_ip, offense, mitigation),
+                    (
+                        user_name,
+                        user_ip,
+                        user_sid,
+                        1 if user_is_registered else 0,
+                        offense,
+                        mitigation,
+                    ),
                 )
 
     def get_session_notices(self):
@@ -523,7 +566,9 @@ class Monitor:
         user_id = user["id"]
         session_id = user["session"]
         logging.warning("user %s at %s: %s", user_name, user_ip, mitigation)
-        self._db.insert_user_offense(user_name, user_ip, offense, mitigation)
+        self._db.insert_user_offense(
+            user_name, user_ip, user.get("s"), user.get("auth"), offense, mitigation
+        )
         self._api.update_session(
             session_id,
             {"alert": self._config.message_user_kick},
