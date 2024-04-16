@@ -163,6 +163,12 @@ class Config:
                 "session_alias_terminate",
                 "message_session_alias_terminate",
             )
+            self._read(
+                parser,
+                "messages",
+                "session_founder_terminate",
+                "message_session_founder_terminate",
+            )
             self._read(parser, "messages", "user_kick", "message_user_kick")
             self._read(
                 parser,
@@ -466,7 +472,8 @@ class Monitor:
             logging.debug("Session is NSFM, skipping")
         else:
             session_title = session["title"]
-            session_alias = session.get("alias")
+            session_alias = session.get("alias", "")
+            session_founder = session.get("founder", "")
             if session_alias and is_offensive(session_alias):
                 logging.warning("Session alias is offensive: %s", session)
                 self._manipulate_offensive_session(
@@ -476,14 +483,27 @@ class Monitor:
                     self._config.message_session_alias_terminate,
                     True,
                 )
-
-            if is_offensive(session_title):
+            elif session_founder and is_offensive(session_founder):
+                logging.warning("Session founder is offensive: %s", session)
+                self._manipulate_offensive_session(
+                    session_id,
+                    f"offensive founder '{session_founder}'",
+                    "terminate session",
+                    self._config.message_session_founder_terminate,
+                    True,
+                )
+            elif is_offensive(session_title):
                 logging.warning("Session is offensive: %s", session)
                 self._handle_offensive_session_name(
                     session_id, f"offensive title '{session_title}'"
                 )
             else:
-                logging.debug("Session title '%s' is okay", session_title)
+                logging.debug(
+                    "Session title '%s', alias '%s', founder '%s' are okay",
+                    session_title,
+                    session_alias,
+                    session_founder,
+                )
 
         return (session_id, nsfm, notice_flags)
 
