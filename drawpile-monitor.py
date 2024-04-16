@@ -91,6 +91,10 @@ class HandleNsfm(enum.Enum):
             raise ValueError(f"Unknown handle_nsfm value '{s}'")
 
 
+class NoticeFlags(enum.IntEnum):
+    OUTDATED = 0x1
+
+
 class Config:
     def __init__(self, config_path, test_profanity_only=False):
         if not config_path:
@@ -129,6 +133,14 @@ class Config:
             )
             self._read(
                 parser,
+                "config",
+                "warn_outdated_sessions",
+                "warn_outdated_sessions",
+                False,
+                convert=lambda s: s.casefold() not in ["false", "f", "no", "0", ""],
+            )
+            self._read(
+                parser,
                 "messages",
                 "session_name_first_warning",
                 "message_session_name_first_warning",
@@ -152,6 +164,12 @@ class Config:
                 "message_session_alias_terminate",
             )
             self._read(parser, "messages", "user_kick", "message_user_kick")
+            self._read(
+                parser,
+                "messages",
+                "session_outdated",
+                "message_session_outdated",
+            )
 
         self._read(parser, "config", "wordlist_path", "wordlist_path", None)
         self._read(parser, "config", "allowlist_path", "allowlist_path", None)
@@ -277,6 +295,13 @@ class Database:
                     mitigation text not null)
                 """
             )
+            con.execute(
+                """
+                create table if not exists session_notices (
+                    session_id text not null,
+                    flags integer not null)
+                """
+            )
 
     def count_session_offenses(self):
         with contextlib.closing(self._con.cursor()) as cur:
@@ -311,6 +336,30 @@ class Database:
                     values (?, ?, ?, ?)
                     """,
                     (user_name, user_ip, offense, mitigation),
+                )
+
+    def get_session_notices(self):
+        session_notices = {}
+        with contextlib.closing(self._con.cursor()) as cur:
+            cur.execute("select session_id, flags from session_notices")
+            while row := cur.fetchone():
+                session_notices[row[0]] = row[1]
+        return session_notices
+
+    def replace_session_notices(self, session_notices):
+        if not self._dry:
+            params = []
+            for session_id, notice_flags in session_notices.items():
+                params.append({"session_id": session_id, "flags": notice_flags})
+            with self._con as con:
+                cur = con.execute("begin")
+                cur.execute("delete from session_notices")
+                cur.executemany(
+                    """
+                    insert into session_notices (session_id, flags)
+                    values (:session_id, :flags)
+                    """,
+                    params,
                 )
 
 
@@ -407,6 +456,11 @@ class Monitor:
         session_id = session["id"]
         logging.debug("Check session %s", session_id)
 
+        if session.get("protocol") in ("dp:4.21.2", "dp:4.22.2", "dp:4.23.0"):
+            notice_flags = NoticeFlags.OUTDATED
+        else:
+            notice_flags = 0
+
         nsfm = session.get("nsfm", False)
         if nsfm and self._should_skip_nsfm():
             logging.debug("Session is NSFM, skipping")
@@ -431,7 +485,15 @@ class Monitor:
             else:
                 logging.debug("Session title '%s' is okay", session_title)
 
-        return (session_id, nsfm)
+        return (session_id, nsfm, notice_flags)
+
+    def _notify_session(self, session_id, notice_flags):
+        if (notice_flags & int(NoticeFlags.OUTDATED)) != 0:
+            logging.warning("Notifying outdated session %s", session_id)
+            self._api.update_session(
+                session_id, {"alert": self._config.message_session_outdated}
+            )
+            self._append_report(f"Session {session_id} on old version, notifying")
 
     # Users
 
@@ -492,6 +554,12 @@ class Monitor:
             self._config.reportable_error_streak,
         )
 
+        warn_outdated_sessions = self._config.warn_outdated_sessions
+        if warn_outdated_sessions:
+            prev_session_notices = self._db.get_session_notices()
+        else:
+            prev_session_notices = {}
+
         try:
             sessions = self._api.get_sessions()
         except Exception:
@@ -502,17 +570,19 @@ class Monitor:
                 self._append_report("Error retrieving sessions")
 
         nsfm_sessions = {}
+        session_notices = {}
         for session in sessions:
             with InterruptDisabled():
                 try:
-                    session_id, nsfm = self._check_session(session)
+                    session_id, nsfm, notice_flags = self._check_session(session)
                     nsfm_sessions[str(session_id)] = bool(nsfm)
+                    if notice_flags != 0:
+                        session_notices[str(session_id)] = int(notice_flags)
                 except Exception:
                     logging.exception("Error checking session %s", session)
                     have_error = True
                     if report_errors:
                         self._append_report(f"Error checking session {session}")
-
         try:
             users = self._api.get_users()
         except Exception:
@@ -531,6 +601,22 @@ class Monitor:
                     have_error = True
                     if report_errors:
                         self._append_report(f"Error checking user {user}")
+
+        if warn_outdated_sessions and not have_error:
+            with InterruptDisabled():
+                for session_id, notice_flags in session_notices.items():
+                    try:
+                        if session_id in prev_session_notices:
+                            logging.debug("Session %s already notified", session_id)
+                        else:
+                            self._notify_session(session_id, notice_flags)
+                    except Exception:
+                        logging.exception("Error notifying session %s", session_id)
+                        have_error = True
+                        if report_errors:
+                            self._append_report(f"Error notifying session {session_id}")
+                if prev_session_notices or session_notices:
+                    self._db.replace_session_notices(session_notices)
 
         if report_errors and have_error:
             self._append_report(
