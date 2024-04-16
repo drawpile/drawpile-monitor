@@ -21,13 +21,14 @@ logging.basicConfig(
 )
 
 
-def init_profanity_checker(wordlist_path):
+def init_profanity_checker(wordlist_path, nsfm_wordlist_path):
     better_profanity.profanity.load_censor_words()
-    if wordlist_path:
-        logging.debug("Loading wordlist %s", wordlist_path)
-        better_profanity.profanity.add_censor_words(
-            list(better_profanity.utils.read_wordlist(wordlist_path))
-        )
+    for path in [wordlist_path, nsfm_wordlist_path]:
+        if path:
+            logging.debug("Loading wordlist %s", path)
+            better_profanity.profanity.add_censor_words(
+                list(better_profanity.utils.read_wordlist(path))
+            )
 
 
 def init_filter_allowed(allowlist_path):
@@ -66,6 +67,24 @@ def init_is_offensive(min_offensive_probability):
     is_offensive = is_offensive_fn
 
 
+def init_is_offensive_nsfm(nsfm_wordlist_path):
+    global is_offensive_nsfm
+
+    is_offensive_nsfm = lambda s: False
+    if nsfm_wordlist_path:
+        words = list(better_profanity.utils.read_wordlist(nsfm_wordlist_path))
+        if words:
+            nsfm_profanity = better_profanity.Profanity(words)
+
+            @functools.lru_cache(maxsize=16384)
+            def is_offensive_nsfm_fn(s):
+                logging.debug("Checking nsfm profanity of '%s'", s)
+                filtered = filter_allowed(s)
+                return nsfm_profanity.contains_profanity(s)
+
+            is_offensive_nsfm = is_offensive_nsfm_fn
+
+
 def is_offensive_better_profanity(s):
     return better_profanity.profanity.contains_profanity(s)
 
@@ -77,16 +96,16 @@ def is_offensive_profanity_check(s):
 
 
 class HandleNsfm(enum.Enum):
-    CHECK = 1
-    SKIP = 2
+    FULL = 1
+    RELAXED = 2
 
     @classmethod
     def convert_from_string(cls, s):
         sc = s.casefold()
-        if sc == "check":
-            return cls.CHECK
-        elif sc == "skip":
-            return cls.SKIP
+        if sc == "full":
+            return cls.FULL
+        elif sc == "relaxed":
+            return cls.RELAXED
         else:
             raise ValueError(f"Unknown handle_nsfm value '{s}'")
 
@@ -121,7 +140,7 @@ class Config:
                 "config",
                 "handle_nsfm",
                 "handle_nsfm",
-                HandleNsfm.CHECK,
+                HandleNsfm.FULL,
                 lambda s: HandleNsfm.convert_from_string(s),
             )
             self._read(
@@ -139,45 +158,29 @@ class Config:
                 False,
                 convert=lambda s: s.casefold() not in ["false", "f", "no", "0", ""],
             )
-            self._read(
-                parser,
-                "messages",
+
+            message_keys = [
                 "session_name_first_warning",
-                "message_session_name_first_warning",
-            )
-            self._read(
-                parser,
-                "messages",
                 "session_name_second_warning",
-                "message_session_name_second_warning",
-            )
-            self._read(
-                parser,
-                "messages",
                 "session_name_terminate",
-                "message_session_name_terminate",
-            )
-            self._read(
-                parser,
-                "messages",
                 "session_alias_terminate",
-                "message_session_alias_terminate",
-            )
-            self._read(
-                parser,
-                "messages",
                 "session_founder_terminate",
-                "message_session_founder_terminate",
-            )
-            self._read(parser, "messages", "user_kick", "message_user_kick")
-            self._read(
-                parser,
-                "messages",
+                "user_kick",
                 "session_outdated",
-                "message_session_outdated",
-            )
+            ]
+            for message_key in message_keys:
+                message_attr = f"message_{message_key}"
+                self._read(parser, "messages", message_key, message_attr)
+                self._read(
+                    parser,
+                    "messages",
+                    message_key + "_nsfm",
+                    message_attr + "_nsfm",
+                    getattr(self, message_attr),
+                )
 
         self._read(parser, "config", "wordlist_path", "wordlist_path", None)
+        self._read(parser, "config", "nsfm_wordlist_path", "nsfm_wordlist_path", None)
         self._read(parser, "config", "allowlist_path", "allowlist_path", None)
         self._read(
             parser,
@@ -220,6 +223,9 @@ class Config:
                     repr(fallback),
                 )
                 setattr(self, attr_key, fallback)
+
+    def get_message(self, key, nsfm=False):
+        return getattr(self, f"message_{key}_nsfm" if nsfm else f"message_{key}")
 
 
 class Api:
@@ -449,8 +455,11 @@ class Monitor:
         else:
             self._reports.append(message)
 
-    def _should_skip_nsfm(self):
-        return self._config.handle_nsfm == HandleNsfm.SKIP
+    def _get_offensive_fn(self, nsfm):
+        if nsfm and self._config.handle_nsfm == HandleNsfm.RELAXED:
+            return is_offensive_nsfm
+        else:
+            return is_offensive
 
     # Sessions
 
@@ -474,14 +483,14 @@ class Monitor:
             self._api.terminate_session(session_id)
         self._append_report(f"Session {session_id}: {offense} - {mitigation}")
 
-    def _handle_offensive_session_name(self, session_id, offense):
+    def _handle_offensive_session_name(self, session_id, offense, nsfm):
         past_offenses = self._db.count_session_offenses_by_session_id(session_id)
         if past_offenses == 0:
             self._manipulate_offensive_session(
                 session_id,
                 offense,
                 "warn nicely, rename session",
-                self._config.message_session_name_first_warning,
+                self._config.get_message("session_name_first_warning", nsfm),
                 False,
             )
         elif past_offenses == 1:
@@ -489,7 +498,7 @@ class Monitor:
                 session_id,
                 offense,
                 "warn threateningly, rename session",
-                self._config.message_session_name_second_warning,
+                self._config.get_message("session_name_second_warning", nsfm),
                 False,
             )
         else:
@@ -497,7 +506,7 @@ class Monitor:
                 session_id,
                 offense,
                 "terminate session",
-                self._config.message_session_name_terminate,
+                self._config.get_message("session_name_terminate", nsfm),
                 True,
             )
 
@@ -511,42 +520,43 @@ class Monitor:
             notice_flags = 0
 
         nsfm = session.get("nsfm", False)
-        if nsfm and self._should_skip_nsfm():
-            logging.debug("Session is NSFM, skipping")
+        offense_suffix = " (nsfm)" if nsfm else ""
+        check_offensive = self._get_offensive_fn(nsfm)
+
+        session_title = session["title"]
+        session_alias = session.get("alias", "")
+        session_founder = session.get("founder", "")
+        if session_alias and check_offensive(session_alias):
+            logging.warning("Session alias is offensive: %s", session)
+            self._manipulate_offensive_session(
+                session_id,
+                f"offensive alias '{session_alias}'{offense_suffix}",
+                "terminate session",
+                self._config.get_message("session_alias_terminate", nsfm),
+                True,
+            )
+        elif session_founder and check_offensive(session_founder):
+            logging.warning("Session founder is offensive: %s", session)
+            self._manipulate_offensive_session(
+                session_id,
+                f"offensive founder '{session_founder}'{offense_suffix}",
+                "terminate session",
+                self._config.get_message("session_founder_terminate", nsfm),
+                True,
+            )
+        elif check_offensive(session_title):
+            logging.warning("Session is offensive: %s", session)
+            self._handle_offensive_session_name(
+                session_id, f"offensive title '{session_title}'{offense_suffix}", nsfm
+            )
         else:
-            session_title = session["title"]
-            session_alias = session.get("alias", "")
-            session_founder = session.get("founder", "")
-            if session_alias and is_offensive(session_alias):
-                logging.warning("Session alias is offensive: %s", session)
-                self._manipulate_offensive_session(
-                    session_id,
-                    f"offensive alias '{session_alias}'",
-                    "terminate session",
-                    self._config.message_session_alias_terminate,
-                    True,
-                )
-            elif session_founder and is_offensive(session_founder):
-                logging.warning("Session founder is offensive: %s", session)
-                self._manipulate_offensive_session(
-                    session_id,
-                    f"offensive founder '{session_founder}'",
-                    "terminate session",
-                    self._config.message_session_founder_terminate,
-                    True,
-                )
-            elif is_offensive(session_title):
-                logging.warning("Session is offensive: %s", session)
-                self._handle_offensive_session_name(
-                    session_id, f"offensive title '{session_title}'"
-                )
-            else:
-                logging.debug(
-                    "Session title '%s', alias '%s', founder '%s' are okay",
-                    session_title,
-                    session_alias,
-                    session_founder,
-                )
+            logging.debug(
+                "Session title '%s', alias '%s', founder '%s' are okay%s",
+                session_title,
+                session_alias,
+                session_founder,
+                offense_suffix,
+            )
 
         return (session_id, nsfm, notice_flags)
 
@@ -554,13 +564,13 @@ class Monitor:
         if (notice_flags & int(NoticeFlags.OUTDATED)) != 0:
             logging.warning("Notifying outdated session %s", session_id)
             self._api.update_session(
-                session_id, {"alert": self._config.message_session_outdated}
+                session_id, {"alert": self._config.get_message("session_outdated")}
             )
             self._append_report(f"Session {session_id} on old version, notifying")
 
     # Users
 
-    def _handle_offensive_user(self, user, offense, mitigation):
+    def _handle_offensive_user(self, user, offense, mitigation, nsfm):
         user_name = user["name"]
         user_ip = user["ip"]
         user_id = user["id"]
@@ -571,41 +581,44 @@ class Monitor:
         )
         self._api.update_session(
             session_id,
-            {"alert": self._config.message_user_kick},
+            {"alert": self._config.get_message("user_kick", nsfm)},
         )
         self._api.kick_user(session_id, user_id)
         self._append_report(f"User {user_name}: {offense} - {mitigation}")
 
     def _check_user(self, user, nsfm_sessions):
         user_name = user["name"]
+        if user.get("mod"):
+            logging.debug("User '%s' is mod, skipping", user_name)
+            return
+
         session_id = user.get("session")
         if not session_id:
             logging.debug("User '%s' is not in any session, skipping", user_name)
             return
 
-        if self._should_skip_nsfm():
-            nsfm = nsfm_sessions.get(session_id)
-            if nsfm is None:
-                logging.warning(
-                    "User '%s' is in unknown session '%s', "
-                    + "treating it as NSFM and skipping",
-                    user_name,
-                    session_id,
-                )
-                return
-            elif nsfm:
-                logging.debug("User '%s' is in NSFM session, skipping", user_name)
-                return
+        nsfm = nsfm_sessions.get(session_id)
+        if nsfm is None:
+            logging.warning(
+                "User '%s' is in unknown session '%s', treating as NSFM",
+                user_name,
+                session_id,
+            )
+            nsfm = True
 
-        if user.get("mod"):
-            logging.debug("User '%s' is mod", user_name)
-        elif is_offensive(user_name):
+        offense_suffix = " (nsfm)" if nsfm else ""
+        check_offensive = self._get_offensive_fn(nsfm)
+
+        if check_offensive(user_name):
             logging.warning("User is offensive: %s", user)
             self._handle_offensive_user(
-                user, f"offensive name '{user_name}'", "warn in session, kick user"
+                user,
+                f"offensive name '{user_name}'{offense_suffix}",
+                "warn in session, kick user",
+                nsfm,
             )
         else:
-            logging.debug("User name '%s' is okay", user_name)
+            logging.debug("User name '%s' is okay%s", user_name, offense_suffix)
 
     # Main entry
 
@@ -761,9 +774,10 @@ if __name__ == "__main__":
         sys.exit(2)
 
     config = Config(args.config)
-    init_profanity_checker(config.wordlist_path)
+    init_profanity_checker(config.wordlist_path, config.nsfm_wordlist_path)
     init_filter_allowed(config.allowlist_path)
     init_is_offensive(config.min_offensive_probability)
+    init_is_offensive_nsfm(config.nsfm_wordlist_path)
 
     dry = args.dryrun
     interval = args.interval

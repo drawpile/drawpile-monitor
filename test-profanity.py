@@ -9,7 +9,7 @@ monitor = importlib.import_module("drawpile-monitor")
 
 
 def _to_verdict(b):
-    return "OFFENSIVE" if b else "CLEAN"
+    return "OFFENSIVE" if b else "ALLOWED"
 
 
 if __name__ == "__main__":
@@ -25,9 +25,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = monitor.Config(args.config, test_profanity_only=True)
-    monitor.init_profanity_checker(config.wordlist_path)
+    monitor.init_profanity_checker(config.wordlist_path, config.nsfm_wordlist_path)
     monitor.init_filter_allowed(config.allowlist_path)
     monitor.init_is_offensive(config.min_offensive_probability)
+    monitor.init_is_offensive_nsfm(config.nsfm_wordlist_path)
 
     min_prob = config.min_offensive_probability
     try:
@@ -40,6 +41,7 @@ if __name__ == "__main__":
             pc = pc_prob >= min_prob
             pc_comparison = ">=" if pc else "<"
             result = monitor.is_offensive(s)
+            nsfm_result = monitor.is_offensive_nsfm(s)
             print(f"\tinput: {repr(s)}")
             print(f"\tafter applying allowlist: {repr(filtered)}")
             print(f"\tword list checker: {_to_verdict(bp)}")
@@ -47,7 +49,8 @@ if __name__ == "__main__":
                 f"\tprediction checker: {_to_verdict(pc)} "
                 + f"({pc_prob * 100.0:.2f}% {pc_comparison} {min_prob * 100.0:.2f}%)"
             )
-            print(f"\tfinal verdict: {_to_verdict(result)}")
+            print(f"\tregular verdict: {_to_verdict(result)}")
+            print(f"\tnsfm verdict: {_to_verdict(nsfm_result)}")
     except EOFError:
         print()
         print()
