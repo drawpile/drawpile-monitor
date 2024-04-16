@@ -96,6 +96,27 @@ def is_offensive_profanity_check(s):
     return profanity_check.predict_prob([s])[0]
 
 
+def init_is_offensive_silent(silent_wordlist_path):
+    global is_offensive_silent
+
+    is_offensive_silent = lambda s: False
+    if silent_wordlist_path:
+        logging.debug("Loading silent wordlist %s", silent_wordlist_path)
+        words = list(better_profanity.utils.read_wordlist(silent_wordlist_path))
+        if words:
+            silent_profanity = better_profanity.Profanity(words)
+
+            @functools.lru_cache(maxsize=16384)
+            def is_offensive_silent_fn(s):
+                logging.debug("Checking silent profanity of '%s'", s)
+                return silent_profanity.contains_profanity(s)
+
+            is_offensive_silent = is_offensive_silent_fn
+            return True
+
+    return False
+
+
 class HandleNsfm(enum.Enum):
     FULL = 1
     RELAXED = 2
@@ -113,6 +134,14 @@ class HandleNsfm(enum.Enum):
 
 class NoticeFlags(enum.IntEnum):
     OUTDATED = 0x1
+
+
+def _convert_discord_ids(s):
+    if s:
+        if re.search(r"\A\s*[0-9]+\s*(?:,\s*[0-9]+\s*)*\Z", s):
+            return [id.strip() for id in s.split(",")]
+        else:
+            raise ValueError(f"Invalid id list: {s}")
 
 
 class Config:
@@ -143,6 +172,22 @@ class Config:
                 "handle_nsfm",
                 HandleNsfm.FULL,
                 lambda s: HandleNsfm.convert_from_string(s),
+            )
+            self._read(
+                parser,
+                "config",
+                "silent_user_mentions",
+                "silent_user_mentions",
+                [],
+                convert=_convert_discord_ids,
+            )
+            self._read(
+                parser,
+                "config",
+                "silent_role_mentions",
+                "silent_role_mentions",
+                [],
+                convert=_convert_discord_ids,
             )
             self._read(
                 parser,
@@ -183,6 +228,9 @@ class Config:
         self._read(parser, "config", "wordlist_path", "wordlist_path", None)
         self._read(parser, "config", "nsfm_wordlist_path", "nsfm_wordlist_path", None)
         self._read(parser, "config", "allowlist_path", "allowlist_path", None)
+        self._read(
+            parser, "config", "silent_wordlist_path", "silent_wordlist_path", None
+        )
         self._read(
             parser,
             "config",
@@ -273,13 +321,17 @@ class Api:
         else:
             logging.debug("No Discord webhook url, not reporting anything")
 
-    def send_notification(self, message):
+    def send_notification(self, message, user_mentions=None, role_mentions=None):
         requests.post(
             self._discord_webhook_url,
             json={
                 "content": message,
                 "flags": 1 << 2,  # suppress embeds
-                "allowed_mentions": {"parse": []},  # suppress mentions
+                "allowed_mentions": {
+                    "parse": [],
+                    "users": user_mentions if user_mentions else [],
+                    "roles": role_mentions if role_mentions else [],
+                },
             },
         )
 
@@ -307,6 +359,13 @@ class Database:
             )
             con.execute(
                 """
+                create index if not exists
+                    session_offense_session_id_idx
+                    on session_offense (session_id)
+                """
+            )
+            con.execute(
+                """
                 create table if not exists user_offense (
                     id integer primary key not null,
                     inserted_at text not null default current_timestamp,
@@ -321,6 +380,22 @@ class Database:
                 create table if not exists session_notices (
                     session_id text not null,
                     flags integer not null)
+                """
+            )
+            con.execute(
+                """
+                create table if not exists session_silent_notification (
+                    id integer primary key not null,
+                    inserted_at text not null default current_timestamp,
+                    session_id text not null,
+                    offense text not null)
+                """
+            )
+            con.execute(
+                """
+                create unique index if not exists
+                    session_silent_notification_session_id_offense_idx
+                    on session_silent_notification (session_id, offense)
                 """
             )
             con.execute(
@@ -401,6 +476,28 @@ class Database:
                     ),
                 )
 
+    def has_session_silent_notification(self, session_id, offense):
+        with contextlib.closing(self._con.cursor()) as cur:
+            cur.execute(
+                """
+                select 1 from session_silent_notification
+                where session_id = ? and offense = ?
+                """,
+                (session_id, offense),
+            )
+            return bool(cur.fetchone())
+
+    def insert_session_silent_notification(self, session_id, offense):
+        if not self._dry:
+            with self._con as con:
+                con.execute(
+                    """
+                    insert into session_silent_notification (session_id, offense)
+                    values (?, ?)
+                    """,
+                    (session_id, offense),
+                )
+
     def get_session_notices(self):
         session_notices = {}
         with contextlib.closing(self._con.cursor()) as cur:
@@ -445,11 +542,14 @@ class InterruptDisabled:
 
 
 class Monitor:
-    def __init__(self, dry, config, api, db):
+    def __init__(self, dry, config, api, db, have_silent_wordlist):
         self._dry = dry
         self._config = config
         self._api = api
         self._db = db
+        self._have_silent_notifications = (
+            have_silent_wordlist and api.can_send_reports()
+        )
         self._reports = []
         self._error_streak = 0
 
@@ -470,6 +570,51 @@ class Monitor:
             return is_offensive
 
     # Sessions
+
+    def _send_session_silent_notification(self, session_id, offense):
+        if self._db.has_session_silent_notification(session_id, offense):
+            logging.debug("Session already has silent notification, skipping")
+        else:
+            mentions = ""
+            user_mentions = self._config.silent_user_mentions
+            for user_mention in user_mentions:
+                mentions += f"<@{user_mention}> "
+
+            role_mentions = self._config.silent_role_mentions
+            for role_mention in role_mentions:
+                mentions += f"<@&{role_mention}> "
+
+            self._api.send_notification(
+                f"{mentions}**Attention required:** {offense}, session id `{session_id}`",
+                user_mentions=user_mentions,
+                role_mentions=role_mentions,
+            )
+
+            self._db.insert_session_silent_notification(session_id, offense)
+
+    def _check_session_silent_notification(
+        self, session_id, session_title, session_alias, session_founder
+    ):
+        if self._have_silent_notifications:
+            if is_offensive_silent(session_title):
+                self._send_session_silent_notification(
+                    session_id,
+                    f"title of session '{session_title}'",
+                )
+                return True
+            elif session_alias and is_offensive_silent(session_alias):
+                self._send_session_silent_notification(
+                    session_id,
+                    f"alias '{session_alias}' of session '{session_title}'",
+                )
+                return True
+            elif session_founder and is_offensive_silent(session_founder):
+                self._send_session_silent_notification(
+                    session_id,
+                    f"founder '{session_founder}' of session '{session_title}'",
+                )
+                return True
+        return False
 
     def _generate_clean_title(self):
         # The number of offenses is a reasonably unique and small number.
@@ -527,44 +672,48 @@ class Monitor:
         else:
             notice_flags = 0
 
-        nsfm = session.get("nsfm", False)
-        offense_suffix = " (nsfm)" if nsfm else ""
-        check_offensive = self._get_offensive_fn(nsfm)
-
         session_title = session["title"]
         session_alias = session.get("alias", "")
         session_founder = session.get("founder", "")
-        if session_alias and check_offensive(session_alias):
-            logging.warning("Session alias is offensive: %s", session)
-            self._manipulate_offensive_session(
-                session_id,
-                f"offensive alias '{session_alias}'{offense_suffix}",
-                "terminate session",
-                self._config.get_message("session_alias_terminate", nsfm),
-                True,
-            )
-        elif session_founder and check_offensive(session_founder):
-            logging.warning("Session founder is offensive: %s", session)
-            self._manipulate_offensive_session(
-                session_id,
-                f"offensive founder '{session_founder}'{offense_suffix}",
-                "terminate session",
-                self._config.get_message("session_founder_terminate", nsfm),
-                True,
-            )
-        elif check_offensive(session_title):
-            logging.warning("Session is offensive: %s", session)
-            self._handle_offensive_session_name(
-                session_id, f"offensive title '{session_title}'{offense_suffix}", nsfm
-            )
-        else:
-            logging.debug(
-                "Session title '%s', alias '%s', founder '%s' are okay%s",
-                session_title,
-                session_alias,
-                session_founder,
-                offense_suffix,
-            )
+        nsfm = session.get("nsfm", False)
+        if not self._check_session_silent_notification(
+            session_id, session_title, session_alias, session_founder
+        ):
+            offense_suffix = " (nsfm)" if nsfm else ""
+            check_offensive = self._get_offensive_fn(nsfm)
+            if session_alias and check_offensive(session_alias):
+                logging.warning("Session alias is offensive: %s", session)
+                self._manipulate_offensive_session(
+                    session_id,
+                    f"offensive alias '{session_alias}'{offense_suffix}",
+                    "terminate session",
+                    self._config.get_message("session_alias_terminate", nsfm),
+                    True,
+                )
+            elif session_founder and check_offensive(session_founder):
+                logging.warning("Session founder is offensive: %s", session)
+                self._manipulate_offensive_session(
+                    session_id,
+                    f"offensive founder '{session_founder}'{offense_suffix}",
+                    "terminate session",
+                    self._config.get_message("session_founder_terminate", nsfm),
+                    True,
+                )
+            elif check_offensive(session_title):
+                logging.warning("Session is offensive: %s", session)
+                self._handle_offensive_session_name(
+                    session_id,
+                    f"offensive title '{session_title}'{offense_suffix}",
+                    nsfm,
+                )
+            else:
+                logging.debug(
+                    "Session title '%s', alias '%s', founder '%s' are okay%s",
+                    session_title,
+                    session_alias,
+                    session_founder,
+                    offense_suffix,
+                )
 
         return (session_id, nsfm, notice_flags)
 
@@ -786,13 +935,17 @@ if __name__ == "__main__":
     init_filter_allowed(config.allowlist_path)
     init_is_offensive(config.min_offensive_probability)
     init_is_offensive_nsfm(config.nsfm_wordlist_path)
+    have_silent_wordlist = init_is_offensive_silent(config.silent_wordlist_path)
 
     dry = args.dryrun
+    api = Api(dry, config, username, password)
+    if have_silent_wordlist and not api.can_send_reports():
+        raise ValueError("Silent wordlist given, but no URL to send notifications to")
+
     interval = args.interval
     jitter = args.jitter
-    api = Api(dry, config, username, password)
     db = Database(dry, config)
-    monitor = Monitor(dry, config, api, db)
+    monitor = Monitor(dry, config, api, db, have_silent_wordlist)
     while True:
         monitor.check()
         monitor.report()

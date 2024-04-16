@@ -29,6 +29,7 @@ if __name__ == "__main__":
     monitor.init_filter_allowed(config.allowlist_path)
     monitor.init_is_offensive(config.min_offensive_probability)
     monitor.init_is_offensive_nsfm(config.nsfm_wordlist_path)
+    monitor.init_is_offensive_silent(config.silent_wordlist_path)
 
     min_prob = config.min_offensive_probability
     try:
@@ -51,6 +52,7 @@ if __name__ == "__main__":
             )
             print(f"\tregular verdict: {_to_verdict(result)}")
             print(f"\tnsfm verdict: {_to_verdict(nsfm_result)}")
+            print(f"\tsilent notification: {monitor.is_offensive_silent(s)}")
     except EOFError:
         print()
         print()
