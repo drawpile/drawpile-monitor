@@ -575,17 +575,20 @@ class Monitor:
         if self._db.has_session_silent_notification(session_id, offense):
             logging.debug("Session already has silent notification, skipping")
         else:
-            mentions = ""
+            prefix = ""
+            if self._dry:
+                prefix += "**DRY RUN** "
+
             user_mentions = self._config.silent_user_mentions
             for user_mention in user_mentions:
-                mentions += f"<@{user_mention}> "
+                prefix += f"<@{user_mention}> "
 
             role_mentions = self._config.silent_role_mentions
             for role_mention in role_mentions:
-                mentions += f"<@&{role_mention}> "
+                prefix += f"<@&{role_mention}> "
 
             self._api.send_notification(
-                f"{mentions}**Attention required:** {offense}, session id `{session_id}`",
+                f"{prefix}**Attention required:** {offense}, session id `{session_id}`",
                 user_mentions=user_mentions,
                 role_mentions=role_mentions,
             )
