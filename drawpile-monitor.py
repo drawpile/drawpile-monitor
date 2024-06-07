@@ -564,8 +564,16 @@ class Monitor:
         )
         self._reports = []
         self._error_streak = 0
+        if dry:
+            self._reports_dedupe = set()
 
     def _append_report(self, message):
+        if dry:
+            if message in self._reports_dedupe:
+                logging.debug("Skipping duplicate notification: %s", message)
+                return
+            self._reports_dedupe.add(message)
+
         if self._reports:
             new_report = self._reports[-1] + "\n" + message
             if len(new_report.encode()) > 1500:
@@ -589,6 +597,10 @@ class Monitor:
         else:
             prefix = ""
             if self._dry:
+                if offense in self._reports_dedupe:
+                    logging.debug("Skipping duplicate silent notification: %s", offense)
+                    return
+                self._reports_dedupe.add(offense)
                 prefix += "**DRY RUN** "
 
             user_mentions = self._config.silent_user_mentions
