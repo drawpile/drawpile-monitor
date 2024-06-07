@@ -136,6 +136,10 @@ class NoticeFlags(enum.IntEnum):
     OUTDATED = 0x1
 
 
+def _convert_bool(s):
+    return s.casefold() not in ["false", "f", "no", "0", ""]
+
+
 def _convert_discord_ids(s):
     if s:
         if re.search(r"\A\s*[0-9]+\s*(?:,\s*[0-9]+\s*)*\Z", s):
@@ -176,6 +180,14 @@ class Config:
             self._read(
                 parser,
                 "config",
+                "nsfm_users_in_passworded_sessions",
+                "nsfm_users_in_passworded_sessions",
+                False,
+                convert=_convert_bool,
+            )
+            self._read(
+                parser,
+                "config",
                 "silent_user_mentions",
                 "silent_user_mentions",
                 [],
@@ -202,7 +214,7 @@ class Config:
                 "warn_outdated_sessions",
                 "warn_outdated_sessions",
                 False,
-                convert=lambda s: s.casefold() not in ["false", "f", "no", "0", ""],
+                convert=_convert_bool,
             )
 
             message_keys = [
@@ -679,6 +691,7 @@ class Monitor:
         session_alias = session.get("alias", "")
         session_founder = session.get("founder", "")
         nsfm = session.get("nsfm", False)
+        passworded = session.get("hasPassword", False)
         if not self._check_session_silent_notification(
             session_id, session_title, session_alias, session_founder
         ):
@@ -718,7 +731,7 @@ class Monitor:
                     offense_suffix,
                 )
 
-        return (session_id, nsfm, notice_flags)
+        return (session_id, nsfm, passworded, notice_flags)
 
     def _notify_session(self, session_id, notice_flags):
         if (notice_flags & int(NoticeFlags.OUTDATED)) != 0:
@@ -812,8 +825,12 @@ class Monitor:
         for session in sessions:
             with InterruptDisabled():
                 try:
-                    session_id, nsfm, notice_flags = self._check_session(session)
-                    nsfm_sessions[str(session_id)] = bool(nsfm)
+                    session_id, nsfm, passworded, notice_flags = self._check_session(
+                        session
+                    )
+                    nsfm_sessions[str(session_id)] = nsfm or (
+                        passworded and self._config.nsfm_users_in_passworded_sessions
+                    )
                     if notice_flags != 0:
                         session_notices[str(session_id)] = int(notice_flags)
                 except Exception:
