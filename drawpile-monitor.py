@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # SPDX-License-Identifier: MIT
 import argparse
-import better_profanity
 import configparser
 import contextlib
 import enum
@@ -21,14 +20,59 @@ logging.basicConfig(
 )
 
 
-def init_profanity_checker(wordlist_path, nsfm_wordlist_path):
-    better_profanity.profanity.load_censor_words()
-    for path in [wordlist_path, nsfm_wordlist_path]:
-        if path:
+class NoWordsError(Exception):
+    pass
+
+
+class WordlistChecker:
+    COMMENT_OR_BLANK_RE = re.compile(r"\A\s*(#.*\s*)?\Z")
+    ASTERISK_RE = re.compile(r"\A\*+|\*+\Z")
+    WHITESPACE_RE = re.compile(r"\s+")
+
+    def __init__(self, paths):
+        words = []
+        for path in paths:
             logging.debug("Loading wordlist %s", path)
-            better_profanity.profanity.add_censor_words(
-                list(better_profanity.utils.read_wordlist(path))
+            self.load_words(path, lambda line: self._load_word(words, line))
+        if not words:
+            raise NoWordsError()
+        self._re = re.compile("|".join(words), re.IGNORECASE)
+
+    @classmethod
+    def load_words(cls, path, fn):
+        with open(path, "r", encoding="UTF-8") as f:
+            for line in f:
+                if not cls.COMMENT_OR_BLANK_RE.search(line):
+                    fn(line.strip())
+
+    @classmethod
+    def _load_word(cls, words, line):
+        prefix = "" if line.startswith("*") else r"\b"
+        suffix = "" if line.endswith("*") else r"\b"
+        words.append(
+            prefix
+            + r"[\s\-_\.:;,]*".join(
+                map(re.escape, cls.WHITESPACE_RE.split(cls.ASTERISK_RE.sub("", line)))
             )
+            + suffix
+        )
+
+    def check(self, s):
+        return bool(self._re.search(s))
+
+
+def init_wordlist_checker(wordlist_path, nsfm_wordlist_path):
+    global wordlist_checker
+    paths = [
+        os.path.join(
+            os.path.dirname(os.path.realpath(__file__)),
+            "profanity",
+            "profanity_wordlist.txt",
+        ),
+        wordlist_path,
+        nsfm_wordlist_path,
+    ]
+    wordlist_checker = WordlistChecker(filter(bool, paths))
 
 
 def init_filter_allowed(allowlist_path):
@@ -38,7 +82,10 @@ def init_filter_allowed(allowlist_path):
 
     if allowlist_path:
         logging.debug("Loading allowlist %s", allowlist_path)
-        allowed_words = list(better_profanity.utils.read_wordlist(allowlist_path))
+        allowed_words = []
+        WordlistChecker.load_words(
+            allowlist_path, lambda word: allowed_words.append(word)
+        )
         if allowed_words:
             escaped_words = "|".join(map(re.escape, allowed_words))
             allowed_re = re.compile(
@@ -50,6 +97,8 @@ def init_filter_allowed(allowlist_path):
                 return re.sub(allowed_re, "", s)
 
             filter_allowed = filter_allowed_fn
+        else:
+            logging.warning("No words in allowlist %s", allowlist_path)
 
 
 def init_is_offensive(min_offensive_probability):
@@ -60,7 +109,7 @@ def init_is_offensive(min_offensive_probability):
         logging.debug("Checking profanity of '%s'", s)
         filtered = filter_allowed(s)
         return (
-            is_offensive_better_profanity(filtered)
+            is_offensive_wordlist(filtered)
             or is_offensive_profanity_check(filtered) >= min_offensive_probability
         )
 
@@ -73,21 +122,22 @@ def init_is_offensive_nsfm(nsfm_wordlist_path):
     is_offensive_nsfm = lambda s: False
     if nsfm_wordlist_path:
         logging.debug("Loading nsfm wordlist %s", nsfm_wordlist_path)
-        words = list(better_profanity.utils.read_wordlist(nsfm_wordlist_path))
-        if words:
-            nsfm_profanity = better_profanity.Profanity(words)
+        try:
+            nsfm_wordlist_checker = WordlistChecker([nsfm_wordlist_path])
 
             @functools.lru_cache(maxsize=16384)
             def is_offensive_nsfm_fn(s):
                 logging.debug("Checking nsfm profanity of '%s'", s)
                 filtered = filter_allowed(s)
-                return nsfm_profanity.contains_profanity(s)
+                return nsfm_wordlist_checker.check(s)
 
             is_offensive_nsfm = is_offensive_nsfm_fn
+        except NoWordsError:
+            logging.warning("No words in nsfm wordlist %s", nsfm_wordlist_path)
 
 
-def is_offensive_better_profanity(s):
-    return better_profanity.profanity.contains_profanity(s)
+def is_offensive_wordlist(s):
+    return wordlist_checker.check(s)
 
 
 def is_offensive_profanity_check(s):
@@ -102,17 +152,18 @@ def init_is_offensive_silent(silent_wordlist_path):
     is_offensive_silent = lambda s: False
     if silent_wordlist_path:
         logging.debug("Loading silent wordlist %s", silent_wordlist_path)
-        words = list(better_profanity.utils.read_wordlist(silent_wordlist_path))
-        if words:
-            silent_profanity = better_profanity.Profanity(words)
+        try:
+            silent_wordlist_checker = WordlistChecker([silent_wordlist_path])
 
             @functools.lru_cache(maxsize=16384)
             def is_offensive_silent_fn(s):
                 logging.debug("Checking silent profanity of '%s'", s)
-                return silent_profanity.contains_profanity(s)
+                return silent_wordlist_checker.check(s)
 
             is_offensive_silent = is_offensive_silent_fn
             return True
+        except NoWordsError:
+            logging.warning("No words in silent wordlist %s", silent_wordlist_path)
 
     return False
 
@@ -963,7 +1014,7 @@ if __name__ == "__main__":
         sys.exit(2)
 
     config = Config(args.config)
-    init_profanity_checker(config.wordlist_path, config.nsfm_wordlist_path)
+    init_wordlist_checker(config.wordlist_path, config.nsfm_wordlist_path)
     init_filter_allowed(config.allowlist_path)
     init_is_offensive(config.min_offensive_probability)
     init_is_offensive_nsfm(config.nsfm_wordlist_path)

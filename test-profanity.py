@@ -25,7 +25,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config = monitor.Config(args.config, test_profanity_only=True)
-    monitor.init_profanity_checker(config.wordlist_path, config.nsfm_wordlist_path)
+    monitor.init_wordlist_checker(config.wordlist_path, config.nsfm_wordlist_path)
     monitor.init_filter_allowed(config.allowlist_path)
     monitor.init_is_offensive(config.min_offensive_probability)
     monitor.init_is_offensive_nsfm(config.nsfm_wordlist_path)
@@ -37,7 +37,7 @@ if __name__ == "__main__":
             print()
             s = input("Enter string to check: ")
             filtered = monitor.filter_allowed(s)
-            bp = monitor.is_offensive_better_profanity(filtered)
+            wl = monitor.is_offensive_wordlist(filtered)
             pc_prob = monitor.is_offensive_profanity_check(filtered)
             pc = pc_prob >= min_prob
             pc_comparison = ">=" if pc else "<"
@@ -45,7 +45,7 @@ if __name__ == "__main__":
             nsfm_result = monitor.is_offensive_nsfm(s)
             print(f"\tinput: {repr(s)}")
             print(f"\tafter applying allowlist: {repr(filtered)}")
-            print(f"\tword list checker: {_to_verdict(bp)}")
+            print(f"\tword list checker: {_to_verdict(wl)}")
             print(
                 f"\tprediction checker: {_to_verdict(pc)} "
                 + f"({pc_prob * 100.0:.2f}% {pc_comparison} {min_prob * 100.0:.2f}%)"
