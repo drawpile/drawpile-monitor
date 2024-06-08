@@ -16,7 +16,8 @@ import sys
 import time
 
 logging.basicConfig(
-    level=getattr(logging, os.environ.get("DRAWPILE_MONITOR_LOG_LEVEL", "WARNING"))
+    level=getattr(logging, os.environ.get("DRAWPILE_MONITOR_LOG_LEVEL", "WARNING")),
+    stream=sys.stdout,
 )
 
 
