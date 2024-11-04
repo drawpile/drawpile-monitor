@@ -20,11 +20,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "-c",
         "--config",
-        help="Where to find the config file",
+        help="Path to config file or http(s) URL to config endpoint, "
+        + "falls back to the DRAWPILE_MONITOR_CONFIG environment variable "
+        + "or config.ini in the script's directory otherwise",
     )
     args = parser.parse_args()
 
-    config = monitor.Config(args.config, test_profanity_only=True)
+    config = monitor.Config(
+        args.config or os.environ.get("DRAWPILE_MONITOR_CONFIG"),
+        test_profanity_only=True,
+    )
     monitor.init_wordlist_checker(config.wordlist_path, config.nsfm_wordlist_path)
     monitor.init_filter_allowed(config.allowlist_path)
     monitor.init_is_offensive(config.min_offensive_probability)

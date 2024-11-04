@@ -977,7 +977,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "-c",
         "--config",
-        help="Where to find the config file",
+        help="Path to config file or http(s) URL to config endpoint, "
+        + "falls back to the DRAWPILE_MONITOR_CONFIG environment variable "
+        + "or config.ini in the script's directory otherwise",
     )
     parser.add_argument(
         "-n",
@@ -1014,7 +1016,7 @@ if __name__ == "__main__":
         logging.critical("Don't have a web admin username and password, stopping")
         sys.exit(2)
 
-    config = Config(args.config)
+    config = Config(args.config or os.environ.get("DRAWPILE_MONITOR_CONFIG"))
     init_wordlist_checker(config.wordlist_path, config.nsfm_wordlist_path)
     init_filter_allowed(config.allowlist_path)
     init_is_offensive(config.min_offensive_probability)
