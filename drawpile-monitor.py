@@ -5,6 +5,7 @@ import configparser
 import contextlib
 import enum
 import functools
+import json
 import logging
 import os
 import random
@@ -14,6 +15,7 @@ import signal
 import sqlite3
 import sys
 import time
+import urllib
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("DRAWPILE_MONITOR_LOG_LEVEL", "WARNING")),
@@ -30,27 +32,31 @@ class WordlistChecker:
     ASTERISK_RE = re.compile(r"\A\*+|\*+\Z")
     WHITESPACE_RE = re.compile(r"\s+")
 
-    def __init__(self, paths):
-        words = []
-        for path in paths:
-            logging.debug("Loading wordlist %s", path)
-            self.load_words(path, lambda line: self._load_word(words, line))
+    def __init__(self, lists):
+        words = set()
+        for l in lists:
+            self.load_words(l, lambda line: self.load_word(words, line))
         if not words:
             raise NoWordsError()
         self._re = re.compile("|".join(words), re.IGNORECASE)
 
     @classmethod
-    def load_words(cls, path, fn):
-        with open(path, "r", encoding="UTF-8") as f:
-            for line in f:
-                if not cls.COMMENT_OR_BLANK_RE.search(line):
-                    fn(line.strip())
+    def load_words(cls, l, fn):
+        if isinstance(l, str):
+            logging.debug("Loading wordlist %s", l)
+            with open(l, "r", encoding="UTF-8") as f:
+                for line in f:
+                    if not cls.COMMENT_OR_BLANK_RE.search(line):
+                        fn(line.strip())
+        else:
+            for line in l:
+                fn(line.strip())
 
     @classmethod
-    def _load_word(cls, words, line):
+    def load_word(cls, words, line):
         prefix = "" if line.startswith("*") else r"\b"
         suffix = "" if line.endswith("*") else r"\b"
-        words.append(
+        words.add(
             prefix
             + r"[\s\-_\.:;,]*".join(
                 map(re.escape, cls.WHITESPACE_RE.split(cls.ASTERISK_RE.sub("", line)))
@@ -62,31 +68,28 @@ class WordlistChecker:
         return bool(self._re.search(s))
 
 
-def init_wordlist_checker(wordlist_path, nsfm_wordlist_path):
+def init_wordlist_checker(wordlist, nsfm_wordlist):
     global wordlist_checker
-    paths = [
+    lists = [
         os.path.join(
             os.path.dirname(os.path.realpath(__file__)),
             "profanity",
             "profanity_wordlist.txt",
         ),
-        wordlist_path,
-        nsfm_wordlist_path,
+        wordlist,
+        nsfm_wordlist,
     ]
-    wordlist_checker = WordlistChecker(filter(bool, paths))
+    wordlist_checker = WordlistChecker(filter(bool, lists))
 
 
-def init_filter_allowed(allowlist_path):
+def init_filter_allowed(allowlist):
     global filter_allowed
 
     filter_allowed = lambda s: s
 
-    if allowlist_path:
-        logging.debug("Loading allowlist %s", allowlist_path)
-        allowed_words = []
-        WordlistChecker.load_words(
-            allowlist_path, lambda word: allowed_words.append(word)
-        )
+    if allowlist:
+        allowed_words = set()
+        WordlistChecker.load_words(allowlist, lambda word: allowed_words.add(word))
         if allowed_words:
             escaped_words = "|".join(map(re.escape, allowed_words))
             allowed_re = re.compile(
@@ -99,7 +102,7 @@ def init_filter_allowed(allowlist_path):
 
             filter_allowed = filter_allowed_fn
         else:
-            logging.warning("No words in allowlist %s", allowlist_path)
+            logging.warning("No words in allowlist %s", allowlist)
 
 
 def init_is_offensive(min_offensive_probability):
@@ -117,14 +120,13 @@ def init_is_offensive(min_offensive_probability):
     is_offensive = is_offensive_fn
 
 
-def init_is_offensive_nsfm(nsfm_wordlist_path):
+def init_is_offensive_nsfm(nsfm_wordlist):
     global is_offensive_nsfm
 
     is_offensive_nsfm = lambda s: False
-    if nsfm_wordlist_path:
-        logging.debug("Loading nsfm wordlist %s", nsfm_wordlist_path)
+    if nsfm_wordlist:
         try:
-            nsfm_wordlist_checker = WordlistChecker([nsfm_wordlist_path])
+            nsfm_wordlist_checker = WordlistChecker([nsfm_wordlist])
 
             @functools.lru_cache(maxsize=16384)
             def is_offensive_nsfm_fn(s):
@@ -134,7 +136,7 @@ def init_is_offensive_nsfm(nsfm_wordlist_path):
 
             is_offensive_nsfm = is_offensive_nsfm_fn
         except NoWordsError:
-            logging.warning("No words in nsfm wordlist %s", nsfm_wordlist_path)
+            logging.warning("No words in nsfm wordlist %s", nsfm_wordlist)
 
 
 def is_offensive_wordlist(s):
@@ -147,14 +149,13 @@ def is_offensive_profanity_check(s):
     return profanity_check.predict_prob([s])[0]
 
 
-def init_is_offensive_silent(silent_wordlist_path):
+def init_is_offensive_silent(silent_wordlist):
     global is_offensive_silent
 
     is_offensive_silent = lambda s: False
-    if silent_wordlist_path:
-        logging.debug("Loading silent wordlist %s", silent_wordlist_path)
+    if silent_wordlist:
         try:
-            silent_wordlist_checker = WordlistChecker([silent_wordlist_path])
+            silent_wordlist_checker = WordlistChecker([silent_wordlist])
 
             @functools.lru_cache(maxsize=16384)
             def is_offensive_silent_fn(s):
@@ -164,7 +165,7 @@ def init_is_offensive_silent(silent_wordlist_path):
             is_offensive_silent = is_offensive_silent_fn
             return True
         except NoWordsError:
-            logging.warning("No words in silent wordlist %s", silent_wordlist_path)
+            logging.warning("No words in silent wordlist %s", silent_wordlist)
 
     return False
 
@@ -205,9 +206,16 @@ class Config:
         if not config_path:
             config_path = self._relative_to_script("config.ini")
         self._has_error = False
-        parser = configparser.ConfigParser()
-        if not parser.read(config_path):
-            raise ValueError(f"Can't parse config '{config_path}'")
+
+        if re.search(r"(?i)\Ahttps?://", config_path):
+            lists_from_file = False
+            with urllib.request.urlopen(config_path) as response:
+                parser = json.loads(response.read())
+        else:
+            lists_from_file = True
+            parser = configparser.ConfigParser()
+            if not parser.read(config_path):
+                raise ValueError(f"Can't parse config '{config_path}'")
 
         if not test_profanity_only:
             self._read(parser, "config", "base_url", "base_url")
@@ -289,12 +297,19 @@ class Config:
                     getattr(self, message_attr),
                 )
 
-        self._read(parser, "config", "wordlist_path", "wordlist_path", None)
-        self._read(parser, "config", "nsfm_wordlist_path", "nsfm_wordlist_path", None)
-        self._read(parser, "config", "allowlist_path", "allowlist_path", None)
-        self._read(
-            parser, "config", "silent_wordlist_path", "silent_wordlist_path", None
-        )
+        if lists_from_file:
+            self._read(parser, "config", "wordlist_path", "wordlist", None)
+            self._read(parser, "config", "nsfm_wordlist_path", "nsfm_wordlist", None)
+            self._read(parser, "config", "allowlist_path", "allowlist", None)
+            self._read(
+                parser, "config", "silent_wordlist_path", "silent_wordlist", None
+            )
+        else:
+            self._read(parser, None, "wordlist", "wordlist", None)
+            self._read(parser, None, "nsfm_wordlist", "nsfm_wordlist", None)
+            self._read(parser, None, "allowlist", "allowlist", None)
+            self._read(parser, None, "silent_wordlist", "silent_wordlist", None)
+
         self._read(
             parser,
             "config",
@@ -315,7 +330,10 @@ class Config:
         self, parser, config_section, config_key, attr_key, fallback=..., convert=...
     ):
         try:
-            value = parser[config_section][config_key]
+            if config_section is None:
+                value = parser[config_key]
+            else:
+                value = parser[config_section][config_key]
             if len(value) > 0:
                 if convert is not Ellipsis:
                     value = convert(value)
@@ -1017,11 +1035,11 @@ if __name__ == "__main__":
         sys.exit(2)
 
     config = Config(args.config or os.environ.get("DRAWPILE_MONITOR_CONFIG"))
-    init_wordlist_checker(config.wordlist_path, config.nsfm_wordlist_path)
-    init_filter_allowed(config.allowlist_path)
+    init_wordlist_checker(config.wordlist, config.nsfm_wordlist)
+    init_filter_allowed(config.allowlist)
     init_is_offensive(config.min_offensive_probability)
-    init_is_offensive_nsfm(config.nsfm_wordlist_path)
-    have_silent_wordlist = init_is_offensive_silent(config.silent_wordlist_path)
+    init_is_offensive_nsfm(config.nsfm_wordlist)
+    have_silent_wordlist = init_is_offensive_silent(config.silent_wordlist)
 
     dry = args.dryrun
     api = Api(dry, config, username, password)

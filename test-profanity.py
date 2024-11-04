@@ -30,11 +30,11 @@ if __name__ == "__main__":
         args.config or os.environ.get("DRAWPILE_MONITOR_CONFIG"),
         test_profanity_only=True,
     )
-    monitor.init_wordlist_checker(config.wordlist_path, config.nsfm_wordlist_path)
-    monitor.init_filter_allowed(config.allowlist_path)
+    monitor.init_wordlist_checker(config.wordlist, config.nsfm_wordlist)
+    monitor.init_filter_allowed(config.allowlist)
     monitor.init_is_offensive(config.min_offensive_probability)
-    monitor.init_is_offensive_nsfm(config.nsfm_wordlist_path)
-    monitor.init_is_offensive_silent(config.silent_wordlist_path)
+    monitor.init_is_offensive_nsfm(config.nsfm_wordlist)
+    monitor.init_is_offensive_silent(config.silent_wordlist)
 
     min_prob = config.min_offensive_probability
     try:

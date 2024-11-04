@@ -70,6 +70,24 @@ those.
 If something is getting falsely flagged, you can use this to figure out where
 it's going wrong so that you can adjust the right knobs.
 
+## Remote Configuration
+
+If you specify the config file to reside at a http(s) URL via the
+`-c`/`--config` command-line option or the `DRAWPILE_MONITOR_CONFIG`
+environment variable, the configuration will be fetched from that URL instead.
+The testing script supports this as well.
+
+The response must be a JSON object. There must be `config` and `messages` keys
+at top-level. Both of them must contain objects that only contain strings as
+values, matching the configuration in the INI file of those sections.
+
+Word lists are specified as arrays of strings under the `wordlist`,
+`nsfm_wordlist`, `allowlist` and `silent_wordlist` keys at top-level, all of
+which are optional.
+
+The above replace `wordlist_path`, `nsfm_wordlist_path`, `allowlist_path` or
+`silent_wordlist_path` under `config`. Those will be ignored if present.
+
 # LICENSE
 
 Licensed under the MIT license, see [the LICENSE file](LICENSE) for details.
