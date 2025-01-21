@@ -111,10 +111,9 @@ def init_is_offensive(min_offensive_probability):
     @functools.lru_cache(maxsize=16384)
     def is_offensive_fn(s):
         logging.debug("Checking profanity of '%s'", s)
-        filtered = filter_allowed(s)
         return (
-            is_offensive_wordlist(filtered)
-            or is_offensive_profanity_check(filtered) >= min_offensive_probability
+            is_offensive_wordlist(s)
+            or is_offensive_profanity_check(s) >= min_offensive_probability
         )
 
     is_offensive = is_offensive_fn
@@ -131,7 +130,6 @@ def init_is_offensive_nsfm(nsfm_wordlist):
             @functools.lru_cache(maxsize=16384)
             def is_offensive_nsfm_fn(s):
                 logging.debug("Checking nsfm profanity of '%s'", s)
-                filtered = filter_allowed(s)
                 return nsfm_wordlist_checker.check(s)
 
             is_offensive_nsfm = is_offensive_nsfm_fn
@@ -690,22 +688,29 @@ class Monitor:
             self._db.insert_session_silent_notification(session_id, offense)
 
     def _check_session_silent_notification(
-        self, session_id, session_title, session_alias, session_founder
+        self,
+        session_id,
+        session_title,
+        session_alias,
+        session_founder,
+        filtered_session_title,
+        filtered_session_alias,
+        filtered_session_founder,
     ):
         if self._have_silent_notifications:
-            if is_offensive_silent(session_title):
+            if is_offensive_silent(filtered_session_title):
                 self._send_session_silent_notification(
                     session_id,
                     f"title of session '{session_title}'",
                 )
                 return True
-            elif session_alias and is_offensive_silent(session_alias):
+            elif session_alias and is_offensive_silent(filtered_session_alias):
                 self._send_session_silent_notification(
                     session_id,
                     f"alias '{session_alias}' of session '{session_title}'",
                 )
                 return True
-            elif session_founder and is_offensive_silent(session_founder):
+            elif session_founder and is_offensive_silent(filtered_session_founder):
                 self._send_session_silent_notification(
                     session_id,
                     f"founder '{session_founder}' of session '{session_title}'",
@@ -772,14 +777,23 @@ class Monitor:
         session_title = session["title"]
         session_alias = session.get("alias", "")
         session_founder = session.get("founder", "")
+        filtered_session_title = filter_allowed(session_title)
+        filtered_session_alias = filter_allowed(session_alias)
+        filtered_session_founder = filter_allowed(session_founder)
         nsfm = session.get("nsfm", False)
         passworded = session.get("hasPassword", False)
         if not self._check_session_silent_notification(
-            session_id, session_title, session_alias, session_founder
+            session_id,
+            session_title,
+            session_alias,
+            session_founder,
+            filtered_session_title,
+            filtered_session_alias,
+            filtered_session_founder,
         ):
             offense_suffix = " (nsfm)" if nsfm else ""
             check_offensive = self._get_offensive_fn(nsfm)
-            if session_alias and check_offensive(session_alias):
+            if session_alias and check_offensive(filtered_session_alias):
                 logging.warning("Session alias is offensive: %s", session)
                 self._manipulate_offensive_session(
                     session_id,
@@ -788,7 +802,7 @@ class Monitor:
                     self._config.get_message("session_alias_terminate", nsfm),
                     True,
                 )
-            elif session_founder and check_offensive(session_founder):
+            elif session_founder and check_offensive(filtered_session_founder):
                 logging.warning("Session founder is offensive: %s", session)
                 self._manipulate_offensive_session(
                     session_id,
@@ -797,7 +811,7 @@ class Monitor:
                     self._config.get_message("session_founder_terminate", nsfm),
                     True,
                 )
-            elif check_offensive(session_title):
+            elif check_offensive(filtered_session_title):
                 logging.warning("Session is offensive: %s", session)
                 self._handle_offensive_session_name(
                     session_id,
@@ -864,7 +878,8 @@ class Monitor:
         offense_suffix = " (nsfm)" if nsfm else ""
         check_offensive = self._get_offensive_fn(nsfm)
 
-        if check_offensive(user_name):
+        filtered_user_name = filter_allowed(user_name)
+        if check_offensive(filtered_user_name):
             logging.warning("User is offensive: %s", user)
             self._handle_offensive_user(
                 user,

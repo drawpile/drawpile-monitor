@@ -46,8 +46,8 @@ if __name__ == "__main__":
             pc_prob = monitor.is_offensive_profanity_check(filtered)
             pc = pc_prob >= min_prob
             pc_comparison = ">=" if pc else "<"
-            result = monitor.is_offensive(s)
-            nsfm_result = monitor.is_offensive_nsfm(s)
+            result = monitor.is_offensive(filtered)
+            nsfm_result = monitor.is_offensive_nsfm(filtered)
             print(f"\tinput: {repr(s)}")
             print(f"\tafter applying allowlist: {repr(filtered)}")
             print(f"\tword list checker: {_to_verdict(wl)}")
@@ -57,7 +57,7 @@ if __name__ == "__main__":
             )
             print(f"\tregular verdict: {_to_verdict(result)}")
             print(f"\tnsfm verdict: {_to_verdict(nsfm_result)}")
-            print(f"\tsilent notification: {monitor.is_offensive_silent(s)}")
+            print(f"\tsilent notification: {monitor.is_offensive_silent(filtered)}")
     except EOFError:
         print()
         print()
