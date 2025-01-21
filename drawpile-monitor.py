@@ -480,6 +480,23 @@ class Database:
             )
             con.execute(
                 """
+                create table if not exists user_silent_notification (
+                    id integer primary key not null,
+                    inserted_at text not null default current_timestamp,
+                    session_id text not null,
+                    user_name text not null,
+                    offense text not null)
+                """
+            )
+            con.execute(
+                """
+                create unique index if not exists
+                    user_silent_notification_session_id_user_name_offense_idx
+                    on user_silent_notification (session_id, user_name, offense)
+                """
+            )
+            con.execute(
+                """
                 create table if not exists migrations (
                     id integer primary key not null)
                 """
@@ -576,6 +593,28 @@ class Database:
                     values (?, ?)
                     """,
                     (session_id, offense),
+                )
+
+    def has_user_silent_notification(self, session_id, user_name, offense):
+        with contextlib.closing(self._con.cursor()) as cur:
+            cur.execute(
+                """
+                select 1 from user_silent_notification
+                where session_id = ? and user_name = ? and offense = ?
+                """,
+                (session_id, user_name, offense),
+            )
+            return bool(cur.fetchone())
+
+    def insert_user_silent_notification(self, session_id, user_name, offense):
+        if not self._dry:
+            with self._con as con:
+                con.execute(
+                    """
+                    insert into user_silent_notification (session_id, user_name, offense)
+                    values (?, ?, ?)
+                    """,
+                    (session_id, user_name, offense),
                 )
 
     def get_session_notices(self):
@@ -839,6 +878,50 @@ class Monitor:
 
     # Users
 
+    def _send_user_silent_notification(self, session_id, user_name, offense):
+        if self._db.has_user_silent_notification(session_id, user_name, offense):
+            logging.debug("User already has silent notification, skipping")
+        else:
+            prefix = ""
+            if self._dry:
+                if offense in self._reports_dedupe:
+                    logging.debug("Skipping duplicate silent notification: %s", offense)
+                    return
+                self._reports_dedupe.add(offense)
+                prefix += "**DRY RUN** "
+
+            user_mentions = self._config.silent_user_mentions
+            for user_mention in user_mentions:
+                prefix += f"<@{user_mention}> "
+
+            role_mentions = self._config.silent_role_mentions
+            for role_mention in role_mentions:
+                prefix += f"<@&{role_mention}> "
+
+            self._api.send_notification(
+                f"{prefix}**Attention required:** {offense}, session id `{session_id}`",
+                user_mentions=user_mentions,
+                role_mentions=role_mentions,
+            )
+
+            self._db.insert_user_silent_notification(session_id, user_name, offense)
+
+    def _check_user_silent_notification(
+        self,
+        session_id,
+        user_name,
+        filtered_user_name,
+    ):
+        if self._have_silent_notifications:
+            if is_offensive_silent(filtered_user_name):
+                self._send_user_silent_notification(
+                    session_id,
+                    user_name,
+                    f"user '{user_name}'",
+                )
+                return True
+        return False
+
     def _handle_offensive_user(self, user, offense, mitigation, nsfm):
         user_name = user["name"]
         user_ip = user["ip"]
@@ -866,29 +949,32 @@ class Monitor:
             logging.debug("User '%s' is not in any session, skipping", user_name)
             return
 
-        nsfm = nsfm_sessions.get(session_id)
-        if nsfm is None:
-            logging.warning(
-                "User '%s' is in unknown session '%s', treating as NSFM",
-                user_name,
-                session_id,
-            )
-            nsfm = True
-
-        offense_suffix = " (nsfm)" if nsfm else ""
-        check_offensive = self._get_offensive_fn(nsfm)
-
         filtered_user_name = filter_allowed(user_name)
-        if check_offensive(filtered_user_name):
-            logging.warning("User is offensive: %s", user)
-            self._handle_offensive_user(
-                user,
-                f"offensive name '{user_name}'{offense_suffix}",
-                "warn in session, kick user",
-                nsfm,
-            )
-        else:
-            logging.debug("User name '%s' is okay%s", user_name, offense_suffix)
+        if not self._check_user_silent_notification(
+            session_id, user_name, filtered_user_name
+        ):
+            nsfm = nsfm_sessions.get(session_id)
+            if nsfm is None:
+                logging.warning(
+                    "User '%s' is in unknown session '%s', treating as NSFM",
+                    user_name,
+                    session_id,
+                )
+                nsfm = True
+
+            offense_suffix = " (nsfm)" if nsfm else ""
+            check_offensive = self._get_offensive_fn(nsfm)
+
+            if check_offensive(filtered_user_name):
+                logging.warning("User is offensive: %s", user)
+                self._handle_offensive_user(
+                    user,
+                    f"offensive name '{user_name}'{offense_suffix}",
+                    "warn in session, kick user",
+                    nsfm,
+                )
+            else:
+                logging.debug("User name '%s' is okay%s", user_name, offense_suffix)
 
     # Main entry
 
